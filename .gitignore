@@ -1,0 +1,6 @@
+node_modules/
+scripts/mcp-server/dist/
+.claude/settings.local.json
+*.log
+.env
+*.zip
