@@ -5,18 +5,10 @@
 // month (price) or one trading day (flows/margin) per call. The newer
 // `openapi.twse.com.tw` endpoints only ever return the latest snapshot for the
 // whole market, so they're used here just for the static company-profile list.
-import { getOrFetch, getOrFetchDisk } from "./cache.js";
+import { getOrFetch } from "./cache.js";
 import { UpstreamError, fetchJson, parseTwNumber } from "./httpClient.js";
-import {
-  addDays,
-  enumerateMonths,
-  enumerateWeekdaysDesc,
-  parseIsoDate,
-  rocToIso,
-  toIsoDate,
-  todayUtc,
-  toYyyymmdd,
-} from "./dateUtils.js";
+import { rocToIso, toYyyymmdd } from "./dateUtils.js";
+import { cacheDay, cacheMonth, collectDaily, collectMonthly, toSnapshot, type DailySeries } from "./series.js";
 import type {
   CompanyProfile,
   DailyPriceRow,
@@ -125,234 +117,88 @@ export async function searchByName(query: string): Promise<TickerSearchHit[]> {
   ];
 }
 
-const BUDGET_MS = 45_000; // most MCP clients drop a call at ~60s
-const MAX_CONSECUTIVE_FAILURES = 3; // likely rate-limited; stop instead of hammering
-const BUDGET_NOTE = `已達 ${BUDGET_MS / 1000} 秒時間上限，提前停止。`;
-
-interface StockDayResponse {
+interface TwseResponse {
   stat: string;
   data?: string[][];
+  tables?: { title?: string; data?: string[][] }[];
 }
 
-/** One month of one ticker. Past months are final and go to the disk cache. */
-async function getMonthPrices(ticker: string, monthStart: Date, deadline: number): Promise<DailyPriceRow[]> {
-  const ymd = toYyyymmdd(monthStart);
-  const url = `${RWD_BASE}/afterTrading/STOCK_DAY?response=json&date=${ymd}&stockNo=${encodeURIComponent(ticker)}`;
-  return getOrFetchDisk<DailyPriceRow[]>(
-    `twse-STOCK_DAY-${ticker}-${ymd.slice(0, 6)}`,
-    async () => {
-      const json = await fetchJson<StockDayResponse>(url, { retries: 2, deadline });
-      if (json.stat.includes("沒有符合條件")) return []; // no trading that month (e.g. before listing)
-      if (json.stat !== "OK" || !json.data) throw new UpstreamError(`TWSE stat: ${json.stat}`, url);
-      return json.data.map((cols) => ({
-        date: rocToIso(cols[0]),
-        volume: parseTwNumber(cols[1]),
-        open: parseTwNumber(cols[3]),
-        high: parseTwNumber(cols[4]),
-        low: parseTwNumber(cols[5]),
-        close: parseTwNumber(cols[6]),
-        average: null,
-        transactionCount: parseTwNumber(cols[8]),
-      }));
-    },
-    () => ymd.slice(0, 6) < taipeiTodayYmd().slice(0, 6)
+const NO_DATA = "沒有符合條件"; // TWSE's stat for holidays / months without trading
+
+export function getDailyPrice(ticker: string, startIso: string, endIso: string): Promise<DailySeries<DailyPriceRow>> {
+  return collectMonthly(
+    "證交所",
+    (monthStart, deadline) =>
+      cacheMonth(`twse-STOCK_DAY-${ticker}`, monthStart, async () => {
+        const url = `${RWD_BASE}/afterTrading/STOCK_DAY?response=json&date=${toYyyymmdd(monthStart)}&stockNo=${encodeURIComponent(ticker)}`;
+        const json = await fetchJson<TwseResponse>(url, { retries: 2, deadline });
+        if (json.stat.includes(NO_DATA)) return []; // e.g. before listing
+        if (json.stat !== "OK" || !json.data) throw new UpstreamError(`TWSE stat: ${json.stat}`, url);
+        return json.data.map((c) => ({
+          date: rocToIso(c[0]),
+          volume: parseTwNumber(c[1]), // 成交股數
+          open: parseTwNumber(c[3]),
+          high: parseTwNumber(c[4]),
+          low: parseTwNumber(c[5]),
+          close: parseTwNumber(c[6]),
+          average: null,
+          transactionCount: parseTwNumber(c[8]),
+        }));
+      }),
+    startIso,
+    endIso
   );
 }
 
-/**
- * One HTTP call per calendar month, newest month first so a partial result is
- * the most recent stretch. A failed month is skipped; stops at the time budget.
- */
-export async function getDailyPrice(
-  ticker: string,
-  startIso: string,
-  endIso: string
-): Promise<DailySeries<DailyPriceRow>> {
-  const deadline = Date.now() + BUDGET_MS;
-  const monthLabel = (m: Date) => toIsoDate(m).slice(0, 7);
-  const months = enumerateMonths(parseIsoDate(startIso), parseIsoDate(endIso)).reverse();
-  const rows: DailyPriceRow[] = [];
-  const failed: string[] = [];
-  let stopReason = "";
-  let streak = 0;
-
-  for (const [i, monthStart] of months.entries()) {
-    if (Date.now() >= deadline) {
-      stopReason = `${BUDGET_NOTE}未抓取：${monthLabel(months.at(-1)!)} 至 ${monthLabel(months[i])}。`;
-      break;
-    }
-    try {
-      const month = await getMonthPrices(ticker, monthStart, deadline);
-      streak = 0;
-      rows.push(...month.filter((r) => r.date >= startIso && r.date <= endIso));
-    } catch {
-      if (Date.now() >= deadline - 1_000) {
-        stopReason = `${BUDGET_NOTE}未抓取：${monthLabel(months.at(-1)!)} 至 ${monthLabel(months[i])}。`;
-        break;
-      }
-      failed.push(monthLabel(monthStart));
-      if (++streak >= MAX_CONSECUTIVE_FAILURES) {
-        stopReason = `連續 ${streak} 個月請求失敗（證交所可能限流），提前停止。`;
-        break;
-      }
-    }
-  }
-
-  const notes: string[] = [];
-  if (failed.length) notes.push(`以下月份抓取失敗：${failed.join(", ")}。`);
-  if (stopReason) notes.push(stopReason);
-  if (notes.length) notes.push("已抓到的月份已快取，稍後再查一次即可補齊。");
-  return {
-    rows: rows.sort((a, b) => a.date.localeCompare(b.date)),
-    limitationNote: notes.length ? notes.join(" ") : undefined,
-  };
-}
-
-const MAX_DAILY_LOOKBACK = 40; // cap fan-out for per-day endpoints (T86 / margin)
-
-interface DayResponse {
-  stat: string;
-  data?: string[][];
-}
-
-/** ticker -> the selected columns of that day's whole-market table; null = no session that day. */
-type DaySnapshot = Record<string, string[]> | null;
-
-function taipeiTodayYmd(): string {
-  return toYyyymmdd(new Date(Date.now() + 8 * 60 * 60 * 1000));
-}
-
-/**
- * T86 / TWT93U return the whole market for one day, so one fetch serves every
- * ticker. Published sessions are final and go to the disk cache; "no data" is
- * persisted only for past days (holidays) — today's may just not be published yet.
- */
-async function getDaySnapshot(
-  name: string,
-  url: string,
-  cols: number[],
-  day: Date,
-  deadline: number
-): Promise<DaySnapshot> {
-  const ymd = toYyyymmdd(day);
-  return getOrFetchDisk<DaySnapshot>(
-    `twse-${name}-${ymd}`,
-    async () => {
-      const json = await fetchJson<DayResponse>(url, { retries: 2, deadline });
-      if (json.stat === "OK" && json.data) {
-        return Object.fromEntries(json.data.map((r) => [r[0].trim(), cols.map((i) => r[i])]));
-      }
-      if (json.stat.includes("沒有符合條件")) return null; // holiday / no session
+/** One whole-market day table; `pick` selects the table out of the response. */
+function twseDay(name: string, urlFor: (ymd: string) => string, cols: number[], pick: (j: TwseResponse) => string[][] | undefined) {
+  return (day: Date, deadline: number) =>
+    cacheDay(`twse-${name}`, day, async () => {
+      const url = urlFor(toYyyymmdd(day));
+      const json = await fetchJson<TwseResponse>(url, { retries: 2, deadline });
+      const data = json.stat === "OK" ? pick(json) : undefined;
+      if (data) return toSnapshot(data, cols);
+      if (json.stat.includes(NO_DATA)) return null;
       throw new UpstreamError(`TWSE stat: ${json.stat}`, url);
-    },
-    (snap) => snap !== null || ymd < taipeiTodayYmd()
-  );
-}
-
-export interface DailySeries<R> {
-  rows: R[];
-  limitationNote?: string;
-}
-
-/**
- * Walks weekdays newest-first until `days` sessions are found. A failed day is
- * recorded and skipped instead of failing the call; stops at the time budget
- * and returns whatever was collected.
- */
-async function collectDaily<R extends { date: string }>(
-  name: string,
-  urlFor: (ymd: string) => string,
-  cols: number[],
-  ticker: string,
-  days: number,
-  toRow: (date: string, v: string[]) => R
-): Promise<DailySeries<R>> {
-  const deadline = Date.now() + BUDGET_MS;
-  const end = todayUtc();
-  const start = addDays(end, -Math.max(days, 1) * 2); // widen window to absorb holidays
-  const rows: R[] = [];
-  const failed: string[] = [];
-  let stopReason = "";
-  let streak = 0;
-
-  for (const day of enumerateWeekdaysDesc(start, end, MAX_DAILY_LOOKBACK)) {
-    if (rows.length >= days) break;
-    if (Date.now() >= deadline) {
-      stopReason = BUDGET_NOTE;
-      break;
-    }
-    try {
-      const snap = await getDaySnapshot(name, urlFor(toYyyymmdd(day)), cols, day, deadline);
-      streak = 0;
-      const v = snap?.[ticker];
-      if (v) rows.push(toRow(toIsoDate(day), v));
-    } catch {
-      if (Date.now() >= deadline - 1_000) {
-        stopReason = BUDGET_NOTE;
-        break;
-      }
-      failed.push(toIsoDate(day));
-      if (++streak >= MAX_CONSECUTIVE_FAILURES) {
-        stopReason = `連續 ${streak} 天請求失敗（證交所可能限流），提前停止。`;
-        break;
-      }
-    }
-  }
-
-  const notes: string[] = [];
-  if (rows.length < days) notes.push(`要求 ${days} 個交易日，實得 ${rows.length} 個。`);
-  if (failed.length) notes.push(`以下日期抓取失敗（可能是交易日或假日）：${failed.join(", ")}。`);
-  if (stopReason) notes.push(stopReason);
-  if (notes.length) notes.push("已抓到的收盤日資料已快取，稍後再查一次即可補齊。");
-  return {
-    rows: rows.sort((a, b) => a.date.localeCompare(b.date)),
-    limitationNote: notes.length ? notes.join(" ") : undefined,
-  };
+    });
 }
 
 // T86 columns: 4 外陸資(不含自營) 7 外資自營 10 投信 11 自營商 18 三大法人合計
-const T86_COLS = [4, 7, 10, 11, 18];
+const t86Day = twseDay(
+  "T86",
+  // ALLBUT0999 = 不含權證/牛熊證: ~1.3k rows vs ~16k, ~7x faster; stocks and ETFs are all still there
+  (ymd) => `${RWD_BASE}/fund/T86?response=json&date=${ymd}&selectType=ALLBUT0999`,
+  [4, 7, 10, 11, 18],
+  (j) => j.data
+);
 
-export function getInstitutionalFlows(
-  ticker: string,
-  days: number
-): Promise<DailySeries<InstitutionalFlowRow>> {
-  return collectDaily(
-    "T86",
-    // ALLBUT0999 = 不含權證/牛熊證: ~1.3k rows vs ~16k, ~7x faster; stocks and ETFs are all still there
-    (ymd) => `${RWD_BASE}/fund/T86?response=json&date=${ymd}&selectType=ALLBUT0999`,
-    T86_COLS,
-    ticker,
-    days,
-    (date, v) => ({
-      date,
-      foreignNet: (parseTwNumber(v[0]) ?? 0) + (parseTwNumber(v[1]) ?? 0),
-      investmentTrustNet: parseTwNumber(v[2]),
-      dealerNet: parseTwNumber(v[3]),
-      totalNet: parseTwNumber(v[4]),
-    })
-  );
+export function getInstitutionalFlows(ticker: string, days: number): Promise<DailySeries<InstitutionalFlowRow>> {
+  return collectDaily("證交所", t86Day, ticker, days, (date, v) => ({
+    date,
+    foreignNet: (parseTwNumber(v[0]) ?? 0) + (parseTwNumber(v[1]) ?? 0),
+    investmentTrustNet: parseTwNumber(v[2]),
+    dealerNet: parseTwNumber(v[3]),
+    totalNet: parseTwNumber(v[4]),
+  }));
 }
 
-// TWT93U columns: 3 融資賣出 4 融資買進 6 融資餘額 9 融券賣出 10 融券買進 12 融券餘額
-const MARGIN_COLS = [3, 4, 6, 9, 10, 12];
+// MI_MARGN 融資融券彙總 (單位：張): 2 資買 3 資賣 6 資餘額 8 券買 9 券賣 12 券餘額.
+// (Not TWT93U — that is 信用額度總量管制餘額表: 融券 + 借券賣出, no 融資 at all.)
+const marginDay = twseDay(
+  "MI_MARGN",
+  (ymd) => `${RWD_BASE}/marginTrading/MI_MARGN?response=json&date=${ymd}&selectType=ALL`,
+  [2, 3, 6, 8, 9, 12],
+  (j) => j.tables?.find((t) => t.title?.includes("融資融券彙總"))?.data
+);
 
 export function getMarginTrading(ticker: string, days: number): Promise<DailySeries<MarginTradingRow>> {
-  return collectDaily(
-    "TWT93U",
-    // stockNo is ignored upstream (whole market is returned), so the URL — and cache — is per day only
-    (ymd) => `${RWD_BASE}/marginTrading/TWT93U?response=json&date=${ymd}`,
-    MARGIN_COLS,
-    ticker,
-    days,
-    (date, v) => ({
-      date,
-      marginSell: parseTwNumber(v[0]),
-      marginBuy: parseTwNumber(v[1]),
-      marginBalance: parseTwNumber(v[2]),
-      shortSell: parseTwNumber(v[3]),
-      shortBuy: parseTwNumber(v[4]),
-      shortBalance: parseTwNumber(v[5]),
-    })
-  );
+  return collectDaily("證交所", marginDay, ticker, days, (date, v) => ({
+    date,
+    marginBuy: parseTwNumber(v[0]),
+    marginSell: parseTwNumber(v[1]),
+    marginBalance: parseTwNumber(v[2]),
+    shortBuy: parseTwNumber(v[3]),
+    shortSell: parseTwNumber(v[4]),
+    shortBalance: parseTwNumber(v[5]),
+  }));
 }

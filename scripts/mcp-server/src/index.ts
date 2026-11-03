@@ -55,11 +55,11 @@ server.registerTool(
     title: "查詢台股日K資料",
     description:
       "依市場層級自動路由到 TWSE 或 TPEx 資料源，取得指定期間的日成交資訊（開高低收、成交量）。" +
-      "注意：TPEx（上櫃/興櫃）官方 OpenAPI 只提供最新一個交易日的快照，沒有歷史區間查詢端點，" +
-      "因此上櫃/興櫃股票即使指定較長區間，也只會回傳最新一筆並附上限制說明；只有上市(TWSE)股票能取得完整歷史區間。",
+      "上市、上櫃皆可取得歷史區間（逐月抓取，過去月份會快取，單次最多 45 秒，未抓完的月份列在 limitationNote，再查一次即可補齊）；" +
+      "成交量單位為股。興櫃沒有歷史行情端點，只會回傳最新一筆報價並附上限制說明。",
     inputSchema: {
       ticker: z.string().describe("台股代號"),
-      start_date: z.string().describe("起始日期 YYYY-MM-DD（僅上市股票有效，上櫃/興櫃會忽略此參數）"),
+      start_date: z.string().describe("起始日期 YYYY-MM-DD（興櫃會忽略此參數）"),
       end_date: z.string().describe("結束日期 YYYY-MM-DD"),
     },
   },
@@ -86,11 +86,11 @@ server.registerTool(
     title: "查詢三大法人買賣超",
     description:
       "取得外資、投信、自營商買賣超股數。興櫃不適用三大法人統計，會回傳空 rows 與說明，請改用 get_shareholding_distribution。" +
-      "上市(TWSE)可取得每日歷史序列；上櫃(TPEx)官方 API 僅能取得最新一個交易日。" +
-      "上市資料逐日抓取（約 2 秒/天，已收盤日會快取），單次最多 45 秒，未抓完的天數會列在 limitationNote，再查一次即可補齊。",
+      "上市、上櫃皆可取得每日歷史序列：逐日抓取（上市約 2 秒/天、上櫃約 1 秒/天，已收盤日會快取），" +
+      "單次最多 45 秒，未抓完的天數會列在 limitationNote，再查一次即可補齊。",
     inputSchema: {
       ticker: z.string().describe("台股代號"),
-      days: z.number().int().positive().max(20).default(10).describe("欲查詢的交易日數量（預設 10、上限 20，僅上市股票有效）"),
+      days: z.number().int().positive().max(20).default(10).describe("欲查詢的交易日數量（預設 10、上限 20）"),
     },
   },
   async ({ ticker, days }) => {
@@ -116,11 +116,11 @@ server.registerTool(
     title: "查詢融資融券餘額",
     description:
       "取得融資餘額、融券餘額變化。興櫃股票依法不得融資融券，會回傳空 rows 與說明，請改用 get_shareholding_distribution。" +
-      "上市(TWSE)可取得每日歷史序列；上櫃(TPEx)官方 API 僅能取得最新一個交易日。" +
-      "上市資料逐日抓取（約 2 秒/天，已收盤日會快取），單次最多 45 秒，未抓完的天數會列在 limitationNote，再查一次即可補齊。",
+      "上市、上櫃皆可取得每日歷史序列：逐日抓取（上市約 2 秒/天、上櫃約 1 秒/天，已收盤日會快取），" +
+      "單次最多 45 秒，未抓完的天數會列在 limitationNote，再查一次即可補齊。",
     inputSchema: {
       ticker: z.string().describe("台股代號"),
-      days: z.number().int().positive().max(20).default(10).describe("欲查詢的交易日數量（預設 10、上限 20，僅上市股票有效）"),
+      days: z.number().int().positive().max(20).default(10).describe("欲查詢的交易日數量（預設 10、上限 20）"),
     },
   },
   async ({ ticker, days }) => {
@@ -130,6 +130,7 @@ server.registerTool(
         ticker,
         marketType: result.marketType,
         marketLabel: MARKET_LABEL[result.marketType],
+        unit: "張",
         rows: result.rows,
         rowCount: result.rows.length,
         limitationNote: result.limitationNote,

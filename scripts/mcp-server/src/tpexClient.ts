@@ -1,16 +1,18 @@
 // TPEx (上櫃/興櫃) data client.
 //
-// Unlike TWSE, TPEx's public OpenAPI endpoints (www.tpex.org.tw/openapi/v1/*) do
-// NOT accept a date parameter for per-ticker history — every endpoint always
-// returns the latest available trading day for the whole market, ignoring any
-// `date=` query string (verified empirically: identical payload with/without it).
-// There is no documented historical per-ticker endpoint. So daily
-// price/institutional-flow/margin lookups here can only ever return the single
-// most recent session, never a date range. Callers must surface that limitation
-// rather than pretend a range was honored.
+// Two sources:
+// - OpenAPI (www.tpex.org.tw/openapi/v1/*): company lists and latest-day
+//   snapshots only — every endpoint ignores any date parameter.
+// - Website JSON (www.tpex.org.tw/www/zh-tw/*?response=json): the history the
+//   OpenAPI lacks. 上櫃 daily price per ticker per month, and whole-market
+//   三大法人 / 融資融券 per day. Columns verified against the OpenAPI snapshot
+//   for the same day. A holiday answers stat "ok" with an empty table.
+// 興櫃 has no history endpoint (tradingStock returns nothing), so its price stays
+// a latest-quote snapshot.
 import { getOrFetch } from "./cache.js";
-import { fetchJson, parseTwNumber, pickByPattern } from "./httpClient.js";
-import { rocToIso } from "./dateUtils.js";
+import { UpstreamError, fetchJson, parseTwNumber } from "./httpClient.js";
+import { rocToIso, toIsoDate } from "./dateUtils.js";
+import { cacheDay, cacheMonth, collectDaily, collectMonthly, toSnapshot, type DailySeries } from "./series.js";
 import type {
   CompanyProfile,
   DailyPriceRow,
@@ -73,7 +75,7 @@ function toProfile(row: RawCompanyEn, marketType: MarketType): CompanyProfile {
 type InstiRow = Record<string, string>;
 
 function fetchOtc3insti(): Promise<InstiRow[]> {
-  return getOrFetch("tpex:otc3insti", SNAPSHOT_TTL_MS, () =>
+  return getOrFetch("tpex:otc3insti", LIST_TTL_MS, () =>
     fetchJson<InstiRow[]>(`${OPEN_BASE}/tpex_3insti_daily_trading`, { retries: 1 })
   );
 }
@@ -154,37 +156,6 @@ export async function searchByNameEmerging(query: string): Promise<TickerSearchH
     }));
 }
 
-interface OtcQuoteRow {
-  Date: string;
-  SecuritiesCompanyCode: string;
-  Close?: string;
-  Open?: string;
-  High?: string;
-  Low?: string;
-  Average?: string;
-  TradingShares?: string;
-  TransactionNumber?: string;
-}
-
-/** Latest OTC session only — see module-level note on TPEx's snapshot-only API. */
-export async function getLatestDailyPriceOtc(ticker: string): Promise<DailyPriceRow | null> {
-  const list = await getOrFetch("tpex:otcDailyClose", SNAPSHOT_TTL_MS, () =>
-    fetchJson<OtcQuoteRow[]>(`${OPEN_BASE}/tpex_mainboard_daily_close_quotes`)
-  );
-  const row = list.find((r) => r.SecuritiesCompanyCode === ticker);
-  if (!row) return null;
-  return {
-    date: rocToIso(row.Date),
-    open: parseTwNumber(row.Open),
-    high: parseTwNumber(row.High),
-    low: parseTwNumber(row.Low),
-    close: parseTwNumber(row.Close),
-    average: parseTwNumber(row.Average),
-    volume: parseTwNumber(row.TradingShares),
-    transactionCount: parseTwNumber(row.TransactionNumber),
-  };
-}
-
 interface EsbQuoteRow {
   Date: string;
   SecuritiesCompanyCode: string;
@@ -218,51 +189,86 @@ export async function getLatestDailyPriceEmerging(ticker: string): Promise<Daily
   };
 }
 
-/** Latest session only. 興櫃 has no equivalent endpoint — callers should treat it as "no data". */
-export async function getLatestInstitutionalFlowsOtc(
-  ticker: string
-): Promise<InstitutionalFlowRow | null> {
-  const list = await fetchOtc3insti();
-  const row = list.find((r) => r.SecuritiesCompanyCode === ticker);
-  if (!row) return null;
-  const foreignBuy = parseTwNumber(pickByPattern(row, ["foreigninvestorsincludemainlandareainvestors-totalbuy"])) ?? 0;
-  const foreignSell = parseTwNumber(pickByPattern(row, ["foreigninvestorsincludemainlandareainvestors-totalsell"])) ?? 0;
-  // Include 外資自營商 so foreignNet matches TWSE's definition (and sums to totalDifference).
-  const foreignDealer = parseTwNumber(pickByPattern(row, ["foreigndealers-difference"])) ?? 0;
-  return {
-    date: rocToIso(row.Date),
-    foreignNet: foreignBuy - foreignSell + foreignDealer,
-    investmentTrustNet: parseTwNumber(pickByPattern(row, ["securitiesinvestmenttrustcompanies-difference"])),
-    dealerNet: parseTwNumber(pickByPattern(row, ["dealers-difference"])),
-    totalNet: parseTwNumber(pickByPattern(row, ["totaldifference"])),
-  };
+const WEB_BASE = "https://www.tpex.org.tw/www/zh-tw";
+
+interface WebResponse {
+  stat: string;
+  tables?: { data?: string[][] }[];
 }
 
-interface MarginRowEn {
-  Date: string;
-  SecuritiesCompanyCode: string;
-  MarginPurchaseBalance?: string;
-  MarginPurchase?: string;
-  MarginSales?: string;
-  ShortSaleBalance?: string;
-  ShortSale?: string;
-  ShortConvering?: string;
+/** "2026/10/30" — the website's date parameter format. */
+function slashDate(d: Date): string {
+  return toIsoDate(d).replace(/-/g, "/");
 }
 
-/** Latest session only. 興櫃 has no margin-trading data at all (per market_types.md). */
-export async function getLatestMarginTradingOtc(ticker: string): Promise<MarginTradingRow | null> {
-  const list = await getOrFetch("tpex:otcMargin", SNAPSHOT_TTL_MS, () =>
-    fetchJson<MarginRowEn[]>(`${OPEN_BASE}/tpex_mainboard_margin_balance`)
+async function fetchWebTable(url: string, deadline: number): Promise<string[][]> {
+  const json = await fetchJson<WebResponse>(url, { retries: 2, deadline });
+  if (json.stat?.toLowerCase() !== "ok") throw new UpstreamError(`TPEx stat: ${json.stat}`, url);
+  return json.tables?.[0]?.data ?? [];
+}
+
+export function getDailyPriceOtc(ticker: string, startIso: string, endIso: string): Promise<DailySeries<DailyPriceRow>> {
+  return collectMonthly(
+    "櫃買中心",
+    (monthStart, deadline) =>
+      cacheMonth(`tpex-tradingStock-${ticker}`, monthStart, async () => {
+        const url = `${WEB_BASE}/afterTrading/tradingStock?code=${encodeURIComponent(ticker)}&date=${slashDate(monthStart)}&response=json`;
+        // 日期 成交張數 成交仟元 開盤 最高 最低 收盤 漲跌 筆數
+        return (await fetchWebTable(url, deadline)).map((c) => {
+          const lots = parseTwNumber(c[1]);
+          return {
+            date: rocToIso(c[0]),
+            volume: lots === null ? null : lots * 1000, // 張 -> 股, same unit as TWSE
+            open: parseTwNumber(c[3]),
+            high: parseTwNumber(c[4]),
+            low: parseTwNumber(c[5]),
+            close: parseTwNumber(c[6]),
+            average: null,
+            transactionCount: parseTwNumber(c[8]),
+          };
+        });
+      }),
+    startIso,
+    endIso
   );
-  const row = list.find((r) => r.SecuritiesCompanyCode === ticker);
-  if (!row) return null;
-  return {
-    date: rocToIso(row.Date),
-    marginBalance: parseTwNumber(row.MarginPurchaseBalance),
-    marginBuy: parseTwNumber(row.MarginPurchase),
-    marginSell: parseTwNumber(row.MarginSales),
-    shortBalance: parseTwNumber(row.ShortSaleBalance),
-    shortBuy: parseTwNumber(row.ShortConvering),
-    shortSell: parseTwNumber(row.ShortSale),
-  };
+}
+
+function tpexDay(name: string, urlFor: (date: string) => string, cols: number[]) {
+  return (day: Date, deadline: number) =>
+    cacheDay(`tpex-${name}`, day, async () => {
+      const data = await fetchWebTable(urlFor(slashDate(day)), deadline);
+      return data.length ? toSnapshot(data, cols) : null;
+    });
+}
+
+// dailyTrade columns (groups of 買/賣/超): 10 外資及陸資合計(含外資自營) 13 投信 22 自營商合計 23 三大法人合計
+const instiDay = tpexDay(
+  "insti",
+  (date) => `${WEB_BASE}/insti/dailyTrade?type=Daily&sect=EW&date=${date}&response=json`,
+  [10, 13, 22, 23]
+);
+
+export function getInstitutionalFlowsOtc(ticker: string, days: number): Promise<DailySeries<InstitutionalFlowRow>> {
+  return collectDaily("櫃買中心", instiDay, ticker, days, (date, v) => ({
+    date,
+    foreignNet: parseTwNumber(v[0]),
+    investmentTrustNet: parseTwNumber(v[1]),
+    dealerNet: parseTwNumber(v[2]),
+    totalNet: parseTwNumber(v[3]),
+  }));
+}
+
+// margin/balance columns (單位：張): 3 資買 4 資賣 6 資餘額 11 券賣 12 券買 14 券餘額
+const marginDay = tpexDay("margin", (date) => `${WEB_BASE}/margin/balance?date=${date}&response=json`, [3, 4, 6, 11, 12, 14]);
+
+export function getMarginTradingOtc(ticker: string, days: number): Promise<DailySeries<MarginTradingRow>> {
+  return collectDaily("櫃買中心", marginDay, ticker, days, (date, v) => ({
+    date,
+    marginBuy: parseTwNumber(v[0]),
+    marginSell: parseTwNumber(v[1]),
+    marginBalance: parseTwNumber(v[2]),
+    shortSell: parseTwNumber(v[3]),
+    shortBuy: parseTwNumber(v[4]),
+    shortBalance: parseTwNumber(v[5]),
+  }));
 }

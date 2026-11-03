@@ -17,7 +17,7 @@
 | `get_company_profile` | 公司基本資料 |
 | `search_ticker_by_name` | 用公司名稱查代號 |
 
-各資料源的限制（例如 TPEx OpenAPI 沒有歷史區間端點）見 [scripts/mcp-server/README.md](scripts/mcp-server/README.md)。
+各資料源、快取與限制（例如興櫃沒有歷史行情）見 [scripts/mcp-server/README.md](scripts/mcp-server/README.md)。
 
 ## 安裝
 

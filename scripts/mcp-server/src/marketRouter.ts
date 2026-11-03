@@ -44,13 +44,7 @@ export async function routeDailyPrice(
     return { marketType, ...(await twse.getDailyPrice(ticker, startDate, endDate)) };
   }
   if (marketType === "TPEx_OTC") {
-    const row = await tpex.getLatestDailyPriceOtc(ticker);
-    return {
-      marketType,
-      rows: row ? [row] : [],
-      limitationNote:
-        "TPEx OpenAPI 上櫃個股日成交僅提供最新一個交易日快照，無官方歷史區間查詢端點，無法回補完整日期區間。",
-    };
+    return { marketType, ...(await tpex.getDailyPriceOtc(ticker, startDate, endDate)) };
   }
   if (marketType === "TPEx_Emerging") {
     const row = await tpex.getLatestDailyPriceEmerging(ticker);
@@ -79,13 +73,7 @@ export async function routeInstitutionalFlows(
     return { marketType, ...(await twse.getInstitutionalFlows(ticker, days)) };
   }
   if (marketType === "TPEx_OTC") {
-    const row = await tpex.getLatestInstitutionalFlowsOtc(ticker);
-    return {
-      marketType,
-      rows: row ? [row] : [],
-      limitationNote:
-        "TPEx OpenAPI 上櫃三大法人買賣超僅提供最新一個交易日快照，無法回補歷史區間。",
-    };
+    return { marketType, ...(await tpex.getInstitutionalFlowsOtc(ticker, days)) };
   }
   if (marketType === "TPEx_Emerging") {
     // 興櫃不在三大法人買賣超統計範圍：櫃買中心三大法人報表只列在「上櫃」選單下
@@ -112,12 +100,7 @@ export async function routeMarginTrading(ticker: string, days: number): Promise<
     return { marketType, ...(await twse.getMarginTrading(ticker, days)) };
   }
   if (marketType === "TPEx_OTC") {
-    const row = await tpex.getLatestMarginTradingOtc(ticker);
-    return {
-      marketType,
-      rows: row ? [row] : [],
-      limitationNote: "TPEx OpenAPI 上櫃融資融券餘額僅提供最新一個交易日快照，無法回補歷史區間。",
-    };
+    return { marketType, ...(await tpex.getMarginTradingOtc(ticker, days)) };
   }
   if (marketType === "TPEx_Emerging") {
     // 興櫃股票不得融資融券：

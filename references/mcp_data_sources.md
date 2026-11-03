@@ -10,8 +10,8 @@
 
 | 資料源 | 涵蓋範圍 | 用途 |
 |---|---|---|
-| TWSE OpenAPI (`openapi.twse.com.tw`) | 上市 | 日K、成交量、三大法人買賣超、融資融券 |
-| TPEx OpenAPI (`www.tpex.org.tw/openapi`) | 上櫃 | 同上，上櫃版本 |
+| TWSE（`openapi.twse.com.tw` 公司/ETF 清單；`www.twse.com.tw/rwd` 歷史） | 上市 | 日K、成交量、三大法人買賣超、融資融券 |
+| TPEx（`www.tpex.org.tw/openapi` 清單/最新快照；`www.tpex.org.tw/www/zh-tw` 歷史） | 上櫃 | 同上，上櫃版本（OpenAPI 只有最新一天，歷史需走網站 JSON） |
 | TPEx 興櫃資訊專區 | 興櫃 | 興櫃成交資訊、興櫃登錄基本資料（含興櫃日期、資本額、輔導券商） |
 | 集保結算所 TDCC 股權分散表 | 上市/上櫃/興櫃 | 每週各持股級距人數與比例（興櫃主要籌碼來源）；開放資料僅最新一週，歷史週次需查網頁表單 |
 | 公開資訊觀測站 MOPS | 上市/上櫃/興櫃 | 財報、月營收、重訊公告 |

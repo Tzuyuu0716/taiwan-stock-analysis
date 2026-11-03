@@ -14,10 +14,11 @@ export class UpstreamError extends Error {
   }
 }
 
-// TWSE bans IPs that exceed ~3 requests / 5s, so requests to it are queued with a
-// fixed gap. The next free slot lives in a file so separate server processes
+// TWSE bans IPs that exceed ~3 requests / 5s, so requests to it (and TPEx) are
+// queued with a fixed gap. The next free slot lives in a file so separate server processes
 // (e.g. Claude Desktop and Claude Code running at once) share one queue.
-const MIN_GAP_MS: Record<string, number> = { "www.twse.com.tw": 2_000 };
+// ponytail: TPEx publishes no limit; 1s is a guess that has not been throttled in testing — raise it if TPEx starts refusing.
+const MIN_GAP_MS: Record<string, number> = { "www.twse.com.tw": 2_000, "www.tpex.org.tw": 1_000 };
 const LOCK_STALE_MS = 5_000; // a crashed holder's lock is ignored after this
 const memorySlot = new Map<string, number>(); // fallback if the cache dir is unusable
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -125,25 +126,4 @@ export function parseTwNumber(raw: string | undefined | null): number | null {
   const cleaned = trimmed.replace(/,/g, "").replace(/^\+/, "");
   const n = Number(cleaned);
   return Number.isNaN(n) ? null : n;
-}
-
-/**
- * Looks up a value in a loosely-keyed record by matching normalized (whitespace-
- * stripped, lowercased) key patterns. Some TPEx OpenAPI endpoints ship JSON keys
- * with inconsistent spacing/typos (e.g. "Dealers-TotalBuy" vs "Dealers -TotalSell"),
- * so exact-key access is fragile; this tolerates that.
- */
-export function pickByPattern(
-  row: Record<string, string>,
-  patterns: string[]
-): string | undefined {
-  const normalize = (s: string) => s.replace(/\s+/g, "").toLowerCase();
-  const targets = patterns.map(normalize);
-  const entries = Object.entries(row).map(([k, v]) => [normalize(k), v] as const);
-  // Exact first: "dealers-difference" is a substring of "foreigndealers-difference",
-  // which comes earlier in TPEx's key order.
-  return (
-    entries.find(([nk]) => targets.includes(nk))?.[1] ??
-    entries.find(([nk]) => targets.some((t) => nk.includes(t)))?.[1]
-  );
 }

@@ -54,10 +54,21 @@ assert.equal(otcEtf.marketType, "TPEx_OTC", "00679B is 上櫃 ETF");
 const otcHits = await call("search_ticker_by_name", { name: "美債20年" });
 assert.ok(otcHits.hits.some((h) => h.ticker === "00679B"), "search finds 00679B");
 
-// OTC flows must add up: 外資 + 投信 + 自營 = 合計 (catches mis-picked TPEx columns).
-for (const t of ["00679B", "6488"]) {
-  const [r] = (await call("get_institutional_flows", { ticker: t })).rows;
-  assert.equal(r.foreignNet + r.investmentTrustNet + r.dealerNet, r.totalNet, `${t} flows sum`);
+// 上櫃 now has history (TPEx website JSON), not just the latest day.
+const OTC = "6488";
+const otcPrice = await call("get_daily_price", { ticker: OTC, start_date: "2026-07-01", end_date: "2026-10-31" });
+assert.ok(otcPrice.rowCount > 60 && !otcPrice.limitationNote, `OTC price: ${otcPrice.limitationNote}`);
+assert.ok(otcPrice.rows.every((r) => r.volume % 1000 === 0), "OTC volume converted 張 -> 股");
+const otcMargin = await call("get_margin_trading", { ticker: OTC, days: 5 });
+assert.ok(otcMargin.rowCount === 5 && otcMargin.unit === "張", `OTC margin: ${otcMargin.limitationNote}`);
+const emergingPrice = await call("get_daily_price", { ticker: EMERGING[0], start_date: "2026-07-01", end_date: "2026-10-31" });
+assert.ok(emergingPrice.rowCount <= 1 && emergingPrice.limitationNote, "興櫃 price stays a snapshot");
+
+// Flows must add up every day: 外資 + 投信 + 自營 = 合計 (catches mis-mapped columns).
+for (const t of [LISTED, OTC, "00679B"]) {
+  const f = await call("get_institutional_flows", { ticker: t, days: 5 });
+  assert.equal(f.rowCount, 5, `${t} flows: ${f.limitationNote}`);
+  for (const r of f.rows) assert.equal(r.foreignNet + r.investmentTrustNet + r.dealerNet, r.totalNet, `${t} ${r.date} flows sum`);
 }
 
 // Cache: same days were fetched for 2330 above, so a different ticker needs no network.
