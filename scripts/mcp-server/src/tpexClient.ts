@@ -225,6 +225,23 @@ export function getDailyPriceEmerging(ticker: string, startIso: string, endIso: 
   );
 }
 
+export interface EmergingLatestQuote {
+  date: string;
+  /** 最後一筆成交價 — not an official close (興櫃 has none). */
+  lastPrice: number | null;
+}
+
+/** Latest 興櫃 last-trade price (OpenAPI snapshot); the history endpoint lacks it. */
+export async function getLatestQuoteEmerging(ticker: string): Promise<EmergingLatestQuote | null> {
+  const list = await getOrFetch("tpex:esbLatest", 10 * 60 * 1000, () =>
+    fetchJson<{ Date: string; SecuritiesCompanyCode: string; LatestPrice?: string }[]>(
+      `${OPEN_BASE}/tpex_esb_latest_statistics`
+    )
+  );
+  const row = list.find((r) => r.SecuritiesCompanyCode === ticker);
+  return row ? { date: rocToIso(row.Date), lastPrice: parseTwNumber(row.LatestPrice) } : null;
+}
+
 function tpexDay(name: string, urlFor: (date: string) => string, cols: number[]) {
   return (day: Date, deadline: number) =>
     cacheDay(`tpex-${name}`, day, async () => {

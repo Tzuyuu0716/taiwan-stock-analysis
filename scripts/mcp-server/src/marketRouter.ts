@@ -27,6 +27,8 @@ export interface DailyPriceResult {
   marketType: MarketType;
   rows: DailyPriceRow[];
   limitationNote?: string;
+  /** 興櫃 only: latest last-trade price, kept apart from rows so it is never mixed into close. */
+  latestQuote?: tpex.EmergingLatestQuote | null;
 }
 
 export async function routeDailyPrice(
@@ -46,9 +48,14 @@ export async function routeDailyPrice(
     return { marketType, ...(await tpex.getDailyPriceOtc(ticker, startDate, endDate)) };
   }
   if (marketType === "TPEx_Emerging") {
-    const result = await tpex.getDailyPriceEmerging(ticker, startDate, endDate);
-    const note = "興櫃為議價交易，沒有開盤價與收盤價（open/close 為 null），均線等指標請以 average（成交均價）計算。";
-    return { marketType, rows: result.rows, limitationNote: [note, result.limitationNote].filter(Boolean).join(" ") };
+    const [result, latestQuote] = await Promise.all([
+      tpex.getDailyPriceEmerging(ticker, startDate, endDate),
+      tpex.getLatestQuoteEmerging(ticker).catch(() => null), // nice-to-have; never fail the call over it
+    ]);
+    const note =
+      "興櫃為議價交易，沒有開盤價與收盤價（open/close 為 null），均線等指標請以 average（成交均價）計算。" +
+      "latestQuote.lastPrice 是最新一天的最後一筆成交價，僅供參考現價，不是正式收盤價，請勿混入均線計算。";
+    return { marketType, rows: result.rows, latestQuote, limitationNote: [note, result.limitationNote].filter(Boolean).join(" ") };
   }
   return { marketType, rows: [] };
 }

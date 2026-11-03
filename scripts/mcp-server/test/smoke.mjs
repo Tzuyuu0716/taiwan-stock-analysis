@@ -64,6 +64,7 @@ assert.ok(otcMargin.rowCount === 5 && otcMargin.unit === "張", `OTC margin: ${o
 const emergingPrice = await call("get_daily_price", { ticker: EMERGING[0], start_date: "2026-07-01", end_date: "2026-10-31" });
 assert.ok(emergingPrice.rowCount > 20, `興櫃 price history: ${emergingPrice.limitationNote}`);
 assert.ok(emergingPrice.rows.every((r) => r.close === null && r.average > 0), "興櫃: no close, average set");
+assert.ok(emergingPrice.latestQuote?.lastPrice > 0, "興櫃 latestQuote keeps the last-trade price");
 
 // Flows must add up every day: 外資 + 投信 + 自營 = 合計 (catches mis-mapped columns).
 for (const t of [LISTED, OTC, "00679B"]) {
