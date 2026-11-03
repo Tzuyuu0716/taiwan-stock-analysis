@@ -17,7 +17,7 @@
 | `get_company_profile` | 公司基本資料 |
 | `search_ticker_by_name` | 用公司名稱查代號 |
 
-各資料源、快取與限制（例如興櫃沒有歷史行情）見 [scripts/mcp-server/README.md](scripts/mcp-server/README.md)。
+各資料源、快取與限制（例如興櫃沒有開盤/收盤價）見 [scripts/mcp-server/README.md](scripts/mcp-server/README.md)。
 
 ## 安裝
 

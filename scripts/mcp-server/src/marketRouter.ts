@@ -26,7 +26,6 @@ export async function determineMarketType(ticker: string): Promise<MarketType> {
 export interface DailyPriceResult {
   marketType: MarketType;
   rows: DailyPriceRow[];
-  /** Set when the market's API can only serve the latest session, not the requested range. */
   limitationNote?: string;
 }
 
@@ -47,13 +46,9 @@ export async function routeDailyPrice(
     return { marketType, ...(await tpex.getDailyPriceOtc(ticker, startDate, endDate)) };
   }
   if (marketType === "TPEx_Emerging") {
-    const row = await tpex.getLatestDailyPriceEmerging(ticker);
-    return {
-      marketType,
-      rows: row ? [row] : [],
-      limitationNote:
-        "TPEx OpenAPI 興櫃行情僅提供最新一筆快照，且興櫃為議價制無正式開盤價，無官方歷史區間查詢端點。",
-    };
+    const result = await tpex.getDailyPriceEmerging(ticker, startDate, endDate);
+    const note = "興櫃為議價交易，沒有開盤價與收盤價（open/close 為 null），均線等指標請以 average（成交均價）計算。";
+    return { marketType, rows: result.rows, limitationNote: [note, result.limitationNote].filter(Boolean).join(" ") };
   }
   return { marketType, rows: [] };
 }

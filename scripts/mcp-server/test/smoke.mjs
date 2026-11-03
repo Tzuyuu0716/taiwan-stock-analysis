@@ -62,7 +62,8 @@ assert.ok(otcPrice.rows.every((r) => r.volume % 1000 === 0), "OTC volume convert
 const otcMargin = await call("get_margin_trading", { ticker: OTC, days: 5 });
 assert.ok(otcMargin.rowCount === 5 && otcMargin.unit === "張", `OTC margin: ${otcMargin.limitationNote}`);
 const emergingPrice = await call("get_daily_price", { ticker: EMERGING[0], start_date: "2026-07-01", end_date: "2026-10-31" });
-assert.ok(emergingPrice.rowCount <= 1 && emergingPrice.limitationNote, "興櫃 price stays a snapshot");
+assert.ok(emergingPrice.rowCount > 20, `興櫃 price history: ${emergingPrice.limitationNote}`);
+assert.ok(emergingPrice.rows.every((r) => r.close === null && r.average > 0), "興櫃: no close, average set");
 
 // Flows must add up every day: 外資 + 投信 + 自營 = 合計 (catches mis-mapped columns).
 for (const t of [LISTED, OTC, "00679B"]) {

@@ -30,6 +30,7 @@ description: Analyze Taiwan stock entry/exit timing across all three market tier
 
    需要抓取：
    - 近期日 K（收盤價、成交量、最高最低）
+     - 興櫃為議價交易，沒有開盤/收盤價（`open`/`close` 為 null），均線、乖離率一律改用 `average`（成交均價）計算，並在輸出中註明
    - 上市/上櫃：三大法人買賣超（外資/投信/自營商）、融資融券餘額變化
    - 興櫃：**改用 `get_shareholding_distribution`**（集保戶股權分散表，建議 weeks=4~8）。興櫃依法不得融資融券，也不在三大法人買賣超統計範圍內，`get_institutional_flows` / `get_margin_trading` 對興櫃只會回傳說明
    - 任何層級都可加查股權分散表，作為週頻籌碼的輔助觀察

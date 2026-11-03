@@ -22,7 +22,7 @@ calls for.
 
 | Data | 上市 (TWSE) | 上櫃 (TPEx) |
 |---|---|---|
-| Daily price (per ticker, per month) | `rwd/zh/afterTrading/STOCK_DAY` | `www/zh-tw/afterTrading/tradingStock` |
+| Daily price (per ticker, per month) | `rwd/zh/afterTrading/STOCK_DAY` | `www/zh-tw/afterTrading/tradingStock` (興櫃: `emerging/historical`) |
 | 三大法人 (whole market, per day) | `rwd/zh/fund/T86` (`selectType=ALLBUT0999`) | `www/zh-tw/insti/dailyTrade` |
 | 融資融券 (whole market, per day, 單位：張) | `rwd/zh/marginTrading/MI_MARGN` | `www/zh-tw/margin/balance` |
 
@@ -33,8 +33,9 @@ the same day and against accounting identities (外資+投信+自營=合計;
 前日餘額+買進−賣出−償還=今日餘額) on every row. Note `TWT93U` is *not* 融資融券 — it
 is 信用額度總量管制餘額表 (融券 + 借券賣出).
 
-興櫃 has no history endpoint, so `get_daily_price` returns the latest quote only,
-with a `limitationNote`. ETFs: TWSE's are in `opendata/t187ap47_L`; TPEx publishes
+興櫃 daily price comes from `www/zh-tw/emerging/historical` (per ticker, per
+month). 興櫃 is negotiated trading with no open/close, so `open`/`close` are null and
+`average` (成交均價) is the price to use. ETFs: TWSE's are in `opendata/t187ap47_L`; TPEx publishes
 no ETF list, so `00`-prefixed codes are looked up in `tpex_3insti_daily_trading`.
 
 ## Caching, rate limits, partial results
@@ -43,7 +44,7 @@ no ETF list, so `00`-prefixed codes are looked up in `tpex_3insti_daily_trading`
   `~/.cache/taiwan-stock-mcp/` (~100 KB per trading day). Files older than 90 days
   are deleted at startup. Delete the directory to clear it.
 - Requests are spaced 2 s apart for TWSE (it bans IPs above ~3 requests / 5 s) and
-  1 s for TPEx, shared across server processes via a lock file in the cache dir.
+  1 s for TPEx (a 10-request burst with no gap was accepted, so this has margin), shared across server processes via a lock file in the cache dir.
   15 s timeout, 2 retries.
 - Each call stops after 45 s (MCP clients drop calls at ~60 s) and returns what it
   got; missing days/months are listed in `limitationNote`, and calling again fills

@@ -4,11 +4,10 @@
 // - OpenAPI (www.tpex.org.tw/openapi/v1/*): company lists and latest-day
 //   snapshots only — every endpoint ignores any date parameter.
 // - Website JSON (www.tpex.org.tw/www/zh-tw/*?response=json): the history the
-//   OpenAPI lacks. 上櫃 daily price per ticker per month, and whole-market
+//   OpenAPI lacks: 上櫃 daily price per ticker per month, and whole-market
 //   三大法人 / 融資融券 per day. Columns verified against the OpenAPI snapshot
 //   for the same day. A holiday answers stat "ok" with an empty table.
-// 興櫃 has no history endpoint (tradingStock returns nothing), so its price stays
-// a latest-quote snapshot.
+//   興櫃 daily price per ticker per month comes from emerging/historical.
 import { getOrFetch } from "./cache.js";
 import { UpstreamError, fetchJson, parseTwNumber } from "./httpClient.js";
 import { rocToIso, toIsoDate } from "./dateUtils.js";
@@ -24,7 +23,6 @@ import type {
 
 const OPEN_BASE = "https://www.tpex.org.tw/openapi/v1";
 const LIST_TTL_MS = 12 * 60 * 60 * 1000;
-const SNAPSHOT_TTL_MS = 10 * 60 * 1000; // whole-market snapshots refresh a few times/hour
 
 interface RawCompanyEn {
   SecuritiesCompanyCode: string;
@@ -156,39 +154,6 @@ export async function searchByNameEmerging(query: string): Promise<TickerSearchH
     }));
 }
 
-interface EsbQuoteRow {
-  Date: string;
-  SecuritiesCompanyCode: string;
-  LatestPrice?: string;
-  Highest?: string;
-  Lowest?: string;
-  Average?: string;
-  TransactionVolume?: string;
-}
-
-/**
- * Latest emerging-board (興櫃) quote only. There is no Open field: 興櫃 trades by
- * negotiated quote (議價), not a centralized auction, so "open/close" as a concept
- * doesn't apply the way it does on TWSE/TPEx mainboard.
- */
-export async function getLatestDailyPriceEmerging(ticker: string): Promise<DailyPriceRow | null> {
-  const list = await getOrFetch("tpex:esbLatest", SNAPSHOT_TTL_MS, () =>
-    fetchJson<EsbQuoteRow[]>(`${OPEN_BASE}/tpex_esb_latest_statistics`)
-  );
-  const row = list.find((r) => r.SecuritiesCompanyCode === ticker);
-  if (!row) return null;
-  return {
-    date: rocToIso(row.Date),
-    open: null,
-    high: parseTwNumber(row.Highest),
-    low: parseTwNumber(row.Lowest),
-    close: parseTwNumber(row.LatestPrice),
-    average: parseTwNumber(row.Average),
-    volume: parseTwNumber(row.TransactionVolume),
-    transactionCount: null,
-  };
-}
-
 const WEB_BASE = "https://www.tpex.org.tw/www/zh-tw";
 
 interface WebResponse {
@@ -227,6 +192,33 @@ export function getDailyPriceOtc(ticker: string, startIso: string, endIso: strin
             transactionCount: parseTwNumber(c[8]),
           };
         });
+      }),
+    startIso,
+    endIso
+  );
+}
+
+/**
+ * 興櫃 is negotiated trading (議價), so there is no open/close — only high, low
+ * and 成交均價 (average). close stays null rather than passing another number off as it.
+ */
+export function getDailyPriceEmerging(ticker: string, startIso: string, endIso: string): Promise<DailySeries<DailyPriceRow>> {
+  return collectMonthly(
+    "櫃買中心",
+    (monthStart, deadline) =>
+      cacheMonth(`tpex-emerging-${ticker}`, monthStart, async () => {
+        const url = `${WEB_BASE}/emerging/historical?code=${encodeURIComponent(ticker)}&date=${slashDate(monthStart)}&response=json`;
+        // 日期 成交股數 成交金額 最高 最低 均價 筆數 (first group; matches OpenAPI tpex_esb_latest_statistics)
+        return (await fetchWebTable(url, deadline)).map((c) => ({
+          date: rocToIso(c[0]),
+          volume: parseTwNumber(c[1]),
+          open: null,
+          high: parseTwNumber(c[3]),
+          low: parseTwNumber(c[4]),
+          close: null,
+          average: parseTwNumber(c[5]),
+          transactionCount: parseTwNumber(c[6]),
+        }));
       }),
     startIso,
     endIso

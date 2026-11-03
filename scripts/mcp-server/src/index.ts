@@ -55,11 +55,11 @@ server.registerTool(
     title: "查詢台股日K資料",
     description:
       "依市場層級自動路由到 TWSE 或 TPEx 資料源，取得指定期間的日成交資訊（開高低收、成交量）。" +
-      "上市、上櫃皆可取得歷史區間（逐月抓取，過去月份會快取，單次最多 45 秒，未抓完的月份列在 limitationNote，再查一次即可補齊）；" +
-      "成交量單位為股。興櫃沒有歷史行情端點，只會回傳最新一筆報價並附上限制說明。",
+      "上市、上櫃、興櫃皆可取得歷史區間（逐月抓取，過去月份會快取，單次最多 45 秒，未抓完的月份列在 limitationNote，再查一次即可補齊）；" +
+      "成交量單位為股。興櫃為議價交易，沒有開盤/收盤價（open/close 為 null），請以 average（成交均價）計算均線。",
     inputSchema: {
       ticker: z.string().describe("台股代號"),
-      start_date: z.string().describe("起始日期 YYYY-MM-DD（興櫃會忽略此參數）"),
+      start_date: z.string().describe("起始日期 YYYY-MM-DD"),
       end_date: z.string().describe("結束日期 YYYY-MM-DD"),
     },
   },

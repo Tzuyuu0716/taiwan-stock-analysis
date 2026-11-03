@@ -17,7 +17,8 @@ export class UpstreamError extends Error {
 // TWSE bans IPs that exceed ~3 requests / 5s, so requests to it (and TPEx) are
 // queued with a fixed gap. The next free slot lives in a file so separate server processes
 // (e.g. Claude Desktop and Claude Code running at once) share one queue.
-// ponytail: TPEx publishes no limit; 1s is a guess that has not been throttled in testing — raise it if TPEx starts refusing.
+// TPEx publishes no limit. Measured 2026-11-03: a 10-request burst with no gap was all
+// accepted, so 1s has wide margin; sustained limits are unknown — raise it if TPEx starts refusing.
 const MIN_GAP_MS: Record<string, number> = { "www.twse.com.tw": 2_000, "www.tpex.org.tw": 1_000 };
 const LOCK_STALE_MS = 5_000; // a crashed holder's lock is ignored after this
 const memorySlot = new Map<string, number>(); // fallback if the cache dir is unusable
