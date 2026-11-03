@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { pruneDiskCache } from "./cache.js";
 import { UpstreamError } from "./httpClient.js";
 import { MARKET_LABEL } from "./types.js";
 import {
@@ -85,10 +86,11 @@ server.registerTool(
     title: "查詢三大法人買賣超",
     description:
       "取得外資、投信、自營商買賣超股數。興櫃不適用三大法人統計，會回傳空 rows 與說明，請改用 get_shareholding_distribution。" +
-      "上市(TWSE)可取得每日歷史序列；上櫃(TPEx)官方 API 僅能取得最新一個交易日。",
+      "上市(TWSE)可取得每日歷史序列；上櫃(TPEx)官方 API 僅能取得最新一個交易日。" +
+      "上市資料逐日抓取（約 2 秒/天，已收盤日會快取），單次最多 45 秒，未抓完的天數會列在 limitationNote，再查一次即可補齊。",
     inputSchema: {
       ticker: z.string().describe("台股代號"),
-      days: z.number().int().positive().max(40).default(20).describe("欲查詢的交易日數量（上限 40，僅上市股票有效）"),
+      days: z.number().int().positive().max(20).default(10).describe("欲查詢的交易日數量（預設 10、上限 20，僅上市股票有效）"),
     },
   },
   async ({ ticker, days }) => {
@@ -114,10 +116,11 @@ server.registerTool(
     title: "查詢融資融券餘額",
     description:
       "取得融資餘額、融券餘額變化。興櫃股票依法不得融資融券，會回傳空 rows 與說明，請改用 get_shareholding_distribution。" +
-      "上市(TWSE)可取得每日歷史序列；上櫃(TPEx)官方 API 僅能取得最新一個交易日。",
+      "上市(TWSE)可取得每日歷史序列；上櫃(TPEx)官方 API 僅能取得最新一個交易日。" +
+      "上市資料逐日抓取（約 2 秒/天，已收盤日會快取），單次最多 45 秒，未抓完的天數會列在 limitationNote，再查一次即可補齊。",
     inputSchema: {
       ticker: z.string().describe("台股代號"),
-      days: z.number().int().positive().max(40).default(20).describe("欲查詢的交易日數量（上限 40，僅上市股票有效）"),
+      days: z.number().int().positive().max(20).default(10).describe("欲查詢的交易日數量（預設 10、上限 20，僅上市股票有效）"),
     },
   },
   async ({ ticker, days }) => {
@@ -217,6 +220,8 @@ server.registerTool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // Fire-and-forget: a failed cleanup must never block or crash the server.
+  pruneDiskCache(90).catch((err) => console.error("cache prune failed:", err));
 }
 
 main().catch((err) => {

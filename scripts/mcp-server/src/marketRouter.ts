@@ -6,6 +6,7 @@
 import * as twse from "./twseClient.js";
 import * as tpex from "./tpexClient.js";
 import * as tdcc from "./tdccClient.js";
+import { parseIsoDate } from "./dateUtils.js";
 import type {
   CompanyProfile,
   DailyPriceRow,
@@ -34,9 +35,13 @@ export async function routeDailyPrice(
   startDate: string,
   endDate: string
 ): Promise<DailyPriceResult> {
+  // Throw (-> isError) rather than silently returning 0 rows, which reads as "no trading".
+  if (parseIsoDate(startDate) > parseIsoDate(endDate)) {
+    throw new Error(`start_date (${startDate}) 晚於 end_date (${endDate})，請對調後再查詢。`);
+  }
   const marketType = await determineMarketType(ticker);
   if (marketType === "TWSE") {
-    return { marketType, rows: await twse.getDailyPrice(ticker, startDate, endDate) };
+    return { marketType, ...(await twse.getDailyPrice(ticker, startDate, endDate)) };
   }
   if (marketType === "TPEx_OTC") {
     const row = await tpex.getLatestDailyPriceOtc(ticker);
@@ -71,7 +76,7 @@ export async function routeInstitutionalFlows(
 ): Promise<InstitutionalFlowResult> {
   const marketType = await determineMarketType(ticker);
   if (marketType === "TWSE") {
-    return { marketType, rows: await twse.getInstitutionalFlows(ticker, days) };
+    return { marketType, ...(await twse.getInstitutionalFlows(ticker, days)) };
   }
   if (marketType === "TPEx_OTC") {
     const row = await tpex.getLatestInstitutionalFlowsOtc(ticker);
@@ -104,7 +109,7 @@ export interface MarginTradingResult {
 export async function routeMarginTrading(ticker: string, days: number): Promise<MarginTradingResult> {
   const marketType = await determineMarketType(ticker);
   if (marketType === "TWSE") {
-    return { marketType, rows: await twse.getMarginTrading(ticker, days) };
+    return { marketType, ...(await twse.getMarginTrading(ticker, days)) };
   }
   if (marketType === "TPEx_OTC") {
     const row = await tpex.getLatestMarginTradingOtc(ticker);

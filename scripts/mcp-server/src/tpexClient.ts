@@ -70,9 +70,28 @@ function toProfile(row: RawCompanyEn, marketType: MarketType): CompanyProfile {
   };
 }
 
+type InstiRow = Record<string, string>;
+
+function fetchOtc3insti(): Promise<InstiRow[]> {
+  return getOrFetch("tpex:otc3insti", SNAPSHOT_TTL_MS, () =>
+    fetchJson<InstiRow[]>(`${OPEN_BASE}/tpex_3insti_daily_trading`, { retries: 1 })
+  );
+}
+
+/**
+ * OTC ETFs (00679B etc.) are not in the company list and TPEx publishes no ETF
+ * list. The 3-institution table (~880 rows, no warrants) includes them, so it
+ * doubles as the ETF list. ponytail: an ETF with zero institutional trades that
+ * day is missing from it; fall back to tpex_mainboard_daily_close_quotes (5MB) if that bites.
+ */
+async function findOtcEtf(ticker: string): Promise<InstiRow | undefined> {
+  if (!ticker.startsWith("00")) return undefined;
+  return (await fetchOtc3insti()).find((r) => r.SecuritiesCompanyCode === ticker);
+}
+
 export async function isOtcTicker(ticker: string): Promise<boolean> {
   const list = await fetchOtcCompanyList();
-  return list.some((c) => c.SecuritiesCompanyCode === ticker);
+  return list.some((c) => c.SecuritiesCompanyCode === ticker) || !!(await findOtcEtf(ticker));
 }
 
 export async function isEmergingTicker(ticker: string): Promise<boolean> {
@@ -83,7 +102,21 @@ export async function isEmergingTicker(ticker: string): Promise<boolean> {
 export async function getCompanyProfileOtc(ticker: string): Promise<CompanyProfile | null> {
   const list = await fetchOtcCompanyList();
   const row = list.find((c) => c.SecuritiesCompanyCode === ticker);
-  return row ? toProfile(row, "TPEx_OTC") : null;
+  if (row) return toProfile(row, "TPEx_OTC");
+  const etf = await findOtcEtf(ticker);
+  if (!etf) return null;
+  return {
+    ticker,
+    name: etf.CompanyName,
+    shortName: etf.CompanyName,
+    marketType: "TPEx_OTC",
+    listedDate: null,
+    incorporationDate: null,
+    industry: "ETF",
+    chairman: null,
+    generalManager: null,
+    capital: null,
+  };
 }
 
 export async function getCompanyProfileEmerging(ticker: string): Promise<CompanyProfile | null> {
@@ -93,15 +126,20 @@ export async function getCompanyProfileEmerging(ticker: string): Promise<Company
 }
 
 export async function searchByNameOtc(query: string): Promise<TickerSearchHit[]> {
-  const list = await fetchOtcCompanyList();
+  const [list, insti] = await Promise.all([fetchOtcCompanyList(), fetchOtc3insti()]);
   const q = query.trim();
-  return list
-    .filter((c) => c.CompanyName.includes(q) || (c.CompanyAbbreviation ?? "").includes(q))
-    .map((c) => ({
-      ticker: c.SecuritiesCompanyCode,
-      name: c.CompanyAbbreviation || c.CompanyName,
-      marketType: "TPEx_OTC" as const,
-    }));
+  return [
+    ...list
+      .filter((c) => c.CompanyName.includes(q) || (c.CompanyAbbreviation ?? "").includes(q))
+      .map((c) => ({
+        ticker: c.SecuritiesCompanyCode,
+        name: c.CompanyAbbreviation || c.CompanyName,
+        marketType: "TPEx_OTC" as const,
+      })),
+    ...insti
+      .filter((r) => r.SecuritiesCompanyCode.startsWith("00") && r.CompanyName.includes(q))
+      .map((r) => ({ ticker: r.SecuritiesCompanyCode, name: r.CompanyName, marketType: "TPEx_OTC" as const })),
+  ];
 }
 
 export async function searchByNameEmerging(query: string): Promise<TickerSearchHit[]> {
@@ -180,22 +218,20 @@ export async function getLatestDailyPriceEmerging(ticker: string): Promise<Daily
   };
 }
 
-type InstiRow = Record<string, string>;
-
 /** Latest session only. 興櫃 has no equivalent endpoint — callers should treat it as "no data". */
 export async function getLatestInstitutionalFlowsOtc(
   ticker: string
 ): Promise<InstitutionalFlowRow | null> {
-  const list = await getOrFetch("tpex:otc3insti", SNAPSHOT_TTL_MS, () =>
-    fetchJson<InstiRow[]>(`${OPEN_BASE}/tpex_3insti_daily_trading`)
-  );
+  const list = await fetchOtc3insti();
   const row = list.find((r) => r.SecuritiesCompanyCode === ticker);
   if (!row) return null;
   const foreignBuy = parseTwNumber(pickByPattern(row, ["foreigninvestorsincludemainlandareainvestors-totalbuy"])) ?? 0;
   const foreignSell = parseTwNumber(pickByPattern(row, ["foreigninvestorsincludemainlandareainvestors-totalsell"])) ?? 0;
+  // Include 外資自營商 so foreignNet matches TWSE's definition (and sums to totalDifference).
+  const foreignDealer = parseTwNumber(pickByPattern(row, ["foreigndealers-difference"])) ?? 0;
   return {
     date: rocToIso(row.Date),
-    foreignNet: foreignBuy - foreignSell,
+    foreignNet: foreignBuy - foreignSell + foreignDealer,
     investmentTrustNet: parseTwNumber(pickByPattern(row, ["securitiesinvestmenttrustcompanies-difference"])),
     dealerNet: parseTwNumber(pickByPattern(row, ["dealers-difference"])),
     totalNet: parseTwNumber(pickByPattern(row, ["totaldifference"])),

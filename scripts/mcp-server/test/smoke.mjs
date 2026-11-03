@@ -42,5 +42,42 @@ assert.ok(listedFlows.rowCount > 0 && !listedFlows.limitationNote, "上市三大
 const listedMargin = await call("get_margin_trading", { ticker: LISTED, days: 5 });
 assert.ok(listedMargin.rowCount > 0 && !listedMargin.limitationNote, "上市融資融券行為不變");
 
+// ETF: 0050 is not in the company list, only the ETF list.
+const etf = await call("get_stock_market_type", { ticker: "0050" });
+assert.equal(etf.marketType, "TWSE", "0050 is 上市 ETF");
+const etfFlows = await call("get_institutional_flows", { ticker: "0050", days: 5 });
+assert.ok(etfFlows.rowCount === 5, `0050 flows: ${etfFlows.limitationNote}`);
+
+// OTC ETF: 00679B is in neither company list, found via the TPEx 3-institution table.
+const otcEtf = await call("get_stock_market_type", { ticker: "00679B" });
+assert.equal(otcEtf.marketType, "TPEx_OTC", "00679B is 上櫃 ETF");
+const otcHits = await call("search_ticker_by_name", { name: "美債20年" });
+assert.ok(otcHits.hits.some((h) => h.ticker === "00679B"), "search finds 00679B");
+
+// OTC flows must add up: 外資 + 投信 + 自營 = 合計 (catches mis-picked TPEx columns).
+for (const t of ["00679B", "6488"]) {
+  const [r] = (await call("get_institutional_flows", { ticker: t })).rows;
+  assert.equal(r.foreignNet + r.investmentTrustNet + r.dealerNet, r.totalNet, `${t} flows sum`);
+}
+
+// Cache: same days were fetched for 2330 above, so a different ticker needs no network.
+const t0 = Date.now();
+await call("get_margin_trading", { ticker: "0050", days: 5 });
+await call("get_institutional_flows", { ticker: "2317", days: 5 });
+assert.ok(Date.now() - t0 < 5000, `cached calls took ${Date.now() - t0}ms`);
+
+// Daily price: reversed range is an error, not a silent empty result; past months are cached.
+const bad = await client.callTool({
+  name: "get_daily_price",
+  arguments: { ticker: LISTED, start_date: "2026-11-03", end_date: "2026-07-01" },
+});
+assert.ok(bad.isError && /晚於/.test(bad.content[0].text), "reversed range errors");
+const range = { ticker: LISTED, start_date: "2026-07-01", end_date: "2026-10-31" };
+const p1 = await call("get_daily_price", range);
+assert.ok(p1.rowCount > 60 && !p1.limitationNote, `daily price: ${p1.limitationNote}`);
+const t1 = Date.now();
+assert.equal((await call("get_daily_price", range)).rowCount, p1.rowCount);
+assert.ok(Date.now() - t1 < 3000, `cached daily price took ${Date.now() - t1}ms`);
+
 await client.close();
 console.log("smoke OK");
